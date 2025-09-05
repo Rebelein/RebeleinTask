@@ -125,7 +125,7 @@ export function UserManagementClient() {
             <AlertDialogHeader>
                 <AlertDialogTitle>Sind Sie sicher?</AlertDialogTitle>
                 <AlertDialogDescription>
-                    Möchten Sie den Benutzer "{userToDelete?.name}" wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden. Alle Aufgaben, bei denen dieser Benutzer der einzige Mitwirkende ist, werden ebenfalls gelöscht.
+                    Möchten Sie den Benutzer &quot;{userToDelete?.name}&quot; wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden. Alle Aufgaben, bei denen dieser Benutzer der einzige Mitwirkende ist, werden ebenfalls gelöscht.
                 </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

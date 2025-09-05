@@ -217,7 +217,7 @@ export function TaskDetailsSheet({ open, onOpenChange, task }: TaskDetailsSheetP
                 {isCompleted ? (
                    <Button variant="outline" onClick={() => updateTaskStatus(task.id, 'open')}>
                       <CircleDot className="mr-2 h-4 w-4" />
-                      Als 'offen' markieren
+                      Als &apos;offen&apos; markieren
                    </Button>
                 ) : (
                     (allSubtasksCompleted || subtasksArray.length === 0) &&
@@ -332,7 +332,7 @@ export function TaskDetailsSheet({ open, onOpenChange, task }: TaskDetailsSheetP
             <AlertDialogHeader>
                 <AlertDialogTitle>Aufgabe wirklich löschen?</AlertDialogTitle>
                 <AlertDialogDescription>
-                   Diese Aktion kann nicht rückgängig gemacht werden. Geben Sie zur Bestätigung "Löschen" ein.
+                   Diese Aktion kann nicht rückgängig gemacht werden. Geben Sie zur Bestätigung &quot;Löschen&quot; ein.
                 </AlertDialogDescription>
             </AlertDialogHeader>
             <div className="py-2">

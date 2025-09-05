@@ -1,6 +1,7 @@
 'use client';
 
 import { CheckSquare, Package } from 'lucide-react';
+import Link from 'next/link';
 import { UserMenu } from './user-menu';
 import { NotificationsPopover } from './notifications-popover';
 import { NewTaskDialog } from './new-task-dialog';
@@ -23,10 +24,10 @@ export function AppHeader() {
     <header className="sticky top-0 z-40 w-full border-b bg-card">
       <div className="container mx-auto flex h-16 items-center space-x-4 sm:justify-between sm:space-x-0">
         <div className="flex gap-6 md:gap-10">
-          <a href="/" className="flex items-center space-x-2">
+          <Link href="/" className="flex items-center space-x-2">
             <CheckSquare className="h-6 w-6 text-primary" />
             <span className="inline-block font-bold text-lg font-headline">RebeleinTask</span>
-          </a>
+          </Link>
         </div>
         <div className="flex flex-1 items-center justify-end space-x-4">
           <nav className="flex items-center space-x-2">

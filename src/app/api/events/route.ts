@@ -32,7 +32,13 @@ export async function GET(req: NextRequest) {
       ];
 
       function send(type: string, payload: any) {
-        controller.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`));
+        try {
+          if (!controller.desiredSize || controller.desiredSize >= 0) {
+            controller.enqueue(encoder.encode(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`));
+          }
+        } catch (error) {
+          console.error('Controller enqueue error:', error);
+        }
       }
 
       changeStreams.forEach((cs) => {
@@ -61,12 +67,28 @@ export async function GET(req: NextRequest) {
       controller.enqueue(encoder.encode(`event: open\ndata: connected\n\n`));
 
       // Heartbeat
-      const hb = setInterval(() => controller.enqueue(encoder.encode(`: keep-alive\n\n`)), 15000);
+      const hb = setInterval(() => {
+        try {
+          if (!controller.desiredSize || controller.desiredSize >= 0) {
+            controller.enqueue(encoder.encode(`: keep-alive\n\n`));
+          }
+        } catch (error) {
+          console.error('Heartbeat error:', error);
+          clearInterval(hb);
+        }
+      }, 15000);
 
-      return () => {
+      // Store cleanup function for cancel
+      (controller as any)._cleanup = () => {
         clearInterval(hb);
         changeStreams.forEach(cs => cs.close());
       };
+    },
+    cancel() {
+      // Proper cleanup when stream is cancelled
+      if ((this as any)._cleanup) {
+        (this as any)._cleanup();
+      }
     }
   });
 

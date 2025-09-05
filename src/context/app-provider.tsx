@@ -51,7 +51,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     setLoading(true);
     // Seed (einmalig) – ruft /api/seed auf
-    fetch('/api/seed', { method: 'POST' }).catch(()=>{}).finally(() => {
+  const autoSeed = process.env.NEXT_PUBLIC_AUTO_SEED === 'true';
+  const seedPromise = autoSeed ? fetch('/api/seed', { method: 'POST' }).catch(()=>{}) : Promise.resolve();
+  seedPromise.finally(() => {
       // EventSource verbinden
       const es = new EventSource('/api/events');
       let refreshTimer: any = null;
@@ -156,7 +158,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           scheduleTasksRefresh();
         }
       });
-      return () => es.close();
+  return () => es.close();
     });
   }, []);
 

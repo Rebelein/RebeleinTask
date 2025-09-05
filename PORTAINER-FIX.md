@@ -1,3 +1,13 @@
+# RebeleinTask - Portainer Fix für Image-Problem
+
+## Problem
+Der Fehler `denied` beim Zugriff auf `ghcr.io/v2/rebelein/rebelleintask/manifests/latest` tritt auf, weil das GitHub Container Registry Image privat ist.
+
+## 🔧 Lösung 1: Verwende Build statt Image
+
+Kopiere diese `docker-compose.yml` in Portainer (Web Editor):
+
+```yaml
 version: '3.8'
 
 services:
@@ -64,3 +74,29 @@ volumes:
 networks:
   rebelleintask_network:
     driver: bridge
+```
+
+## 🔧 Lösung 2: Manuelles Repository Setup
+
+1. **In Portainer**: Stacks → Add Stack
+2. **Name**: `rebelleintask`
+3. **Build method**: **Web editor**
+4. **Paste** die obige YAML-Datei
+5. **Deploy the stack**
+
+## ⏱️ Hinweis
+Der erste Build kann 5-10 Minuten dauern, da das Image direkt aus dem GitHub-Repository gebaut wird.
+
+## 🔧 Lösung 3: Lokales Build (Alternative)
+
+Falls das nicht funktioniert, kannst du auch lokal builden:
+
+```bash
+git clone https://github.com/Rebelein/RebeleinTask.git
+cd RebeleinTask
+docker-compose up -d
+```
+
+## 🎯 Nach dem Deploy verfügbar unter:
+- Anwendung: http://localhost:3000
+- MongoDB Admin: http://localhost:8081

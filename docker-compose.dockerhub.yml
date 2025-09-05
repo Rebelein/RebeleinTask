@@ -2,9 +2,7 @@ version: '3.8'
 
 services:
   app:
-    build: 
-      context: https://github.com/Rebelein/RebeleinTask.git
-      dockerfile: Dockerfile
+    image: rebelein/rebelleintask:latest
     container_name: rebelleintask_app
     environment:
       - NODE_ENV=production

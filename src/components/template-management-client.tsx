@@ -150,7 +150,7 @@ export function TemplateManagementClient() {
             <AlertDialogHeader>
                 <AlertDialogTitle>Sind Sie sicher?</AlertDialogTitle>
                 <AlertDialogDescription>
-                    Möchten Sie die Vorlage "{templateToDelete?.name}" wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.
+                    Möchten Sie die Vorlage &quot;{templateToDelete?.name}&quot; wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.
                 </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

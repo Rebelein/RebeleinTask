@@ -157,7 +157,7 @@ export function OrderList() {
                             <PlusCircle className="h-4 w-4" />
                         </Button>
                     </div>
-                    <p className='text-xs text-muted-foreground'>Fügen Sie einen Artikel zur "Benötigt"-Liste hinzu.</p>
+                    <p className='text-xs text-muted-foreground'>Fügen Sie einen Artikel zur &quot;Benötigt&quot;-Liste hinzu.</p>
                 </div>
             </CardFooter>
         </div>

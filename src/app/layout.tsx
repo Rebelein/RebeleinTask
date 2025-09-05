@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 export const metadata: Metadata = {
   title: 'RebeleinTask',
   description: 'Arbeiten Sie nahtlos an Aufgaben zusammen.',
-  manifest: '/manifest.json',
+  manifest: '/manifest.webmanifest',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',

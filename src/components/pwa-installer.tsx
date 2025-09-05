@@ -1,69 +1,174 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 export default function PWAInstaller() {
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showInstallBanner, setShowInstallBanner] = useState(false);
+
   useEffect(() => {
+    // Service Worker registrieren
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker
-        .register('/sw.js')
+        .register('/sw.js', { scope: '/' })
         .then((registration) => {
-          console.log('SW registered: ', registration);
+          console.log('SW registered successfully');
+          
+          // Check for updates
+          registration.addEventListener('updatefound', () => {
+            const newWorker = registration.installing;
+            if (newWorker) {
+              newWorker.addEventListener('statechange', () => {
+                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                  // New content available
+                  if (confirm('Neue Version verfügbar. App neu laden?')) {
+                    window.location.reload();
+                  }
+                }
+              });
+            }
+          });
         })
-        .catch((registrationError) => {
-          console.log('SW registration failed: ', registrationError);
+        .catch((error) => {
+          console.log('SW registration failed');
         });
     }
 
-    // Handle PWA install prompt
-    let deferredPrompt: any;
-    
+    // PWA Install Handler
     const handleBeforeInstallPrompt = (e: Event) => {
+      console.log('beforeinstallprompt event fired');
       e.preventDefault();
-      deferredPrompt = e;
-      
-      // Show install button or banner
-      const installBanner = document.createElement('div');
-      installBanner.innerHTML = `
-        <div style="position: fixed; bottom: 20px; left: 20px; right: 20px; background: #008080; color: white; padding: 16px; border-radius: 8px; z-index: 1000; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-          <div>
-            <strong>RebeleinTask installieren</strong><br>
-            <small>Installiere die App für ein besseres Erlebnis</small>
-          </div>
-          <div>
-            <button id="install-btn" style="background: white; color: #008080; border: none; padding: 8px 16px; border-radius: 4px; margin-right: 8px; cursor: pointer; font-weight: bold;">Installieren</button>
-            <button id="dismiss-btn" style="background: transparent; color: white; border: 1px solid white; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Später</button>
-          </div>
-        </div>
-      `;
-      
-      document.body.appendChild(installBanner);
-      
-      const installBtn = document.getElementById('install-btn');
-      const dismissBtn = document.getElementById('dismiss-btn');
-      
-      installBtn?.addEventListener('click', () => {
-        deferredPrompt.prompt();
-        deferredPrompt.userChoice.then((choiceResult: any) => {
-          if (choiceResult.outcome === 'accepted') {
-            console.log('User accepted the install prompt');
-          }
-          deferredPrompt = null;
-          installBanner.remove();
-        });
-      });
-      
-      dismissBtn?.addEventListener('click', () => {
-        installBanner.remove();
-      });
+      setDeferredPrompt(e);
+      setShowInstallBanner(true);
+    };
+
+    // App bereits installiert?
+    const handleAppInstalled = () => {
+      console.log('PWA was installed');
+      setShowInstallBanner(false);
+      setDeferredPrompt(null);
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    // Fallback für iOS/Safari
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
+    
+    if (isIOS && !isStandalone) {
+      setTimeout(() => {
+        setShowInstallBanner(true);
+      }, 3000);
+    }
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
     };
   }, []);
 
-  return null;
+  const handleInstallClick = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      
+      if (outcome === 'accepted') {
+        console.log('User accepted install');
+      }
+      
+      setDeferredPrompt(null);
+      setShowInstallBanner(false);
+    } else {
+      // Fallback für iOS/Safari
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if (isIOS) {
+        alert('Um diese App zu installieren:\n\n1. Tippe auf das Teilen-Symbol unten\n2. Wähle "Zum Home-Bildschirm"\n3. Tippe "Hinzufügen"');
+      }
+    }
+  };
+
+  const handleDismiss = () => {
+    setShowInstallBanner(false);
+    // Für 24h nicht mehr anzeigen
+    localStorage.setItem('pwa-install-dismissed', Date.now().toString());
+  };
+
+  // Nicht anzeigen wenn kürzlich dismissed
+  useEffect(() => {
+    const dismissed = localStorage.getItem('pwa-install-dismissed');
+    if (dismissed) {
+      const dismissedTime = parseInt(dismissed);
+      const now = Date.now();
+      const dayInMs = 24 * 60 * 60 * 1000;
+      
+      if (now - dismissedTime < dayInMs) {
+        setShowInstallBanner(false);
+      }
+    }
+  }, []);
+
+  if (!showInstallBanner) return null;
+
+  return (
+    <div 
+      style={{
+        position: 'fixed',
+        bottom: '20px',
+        left: '20px',
+        right: '20px',
+        background: '#008080',
+        color: 'white',
+        padding: '16px',
+        borderRadius: '12px',
+        zIndex: 1000,
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.25)',
+        fontSize: '14px',
+        fontFamily: 'system-ui, -apple-system, sans-serif'
+      }}
+    >
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
+          📱 RebeleinTask installieren
+        </div>
+        <div style={{ fontSize: '12px', opacity: 0.9 }}>
+          Installiere die App für ein besseres Erlebnis
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+        <button
+          onClick={handleInstallClick}
+          style={{
+            background: 'white',
+            color: '#008080',
+            border: 'none',
+            padding: '10px 16px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            fontSize: '12px'
+          }}
+        >
+          Installieren
+        </button>
+        <button
+          onClick={handleDismiss}
+          style={{
+            background: 'transparent',
+            color: 'white',
+            border: '1px solid rgba(255,255,255,0.5)',
+            padding: '10px 12px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontSize: '12px'
+          }}
+        >
+          Später
+        </button>
+      </div>
+    </div>
+  );
 }

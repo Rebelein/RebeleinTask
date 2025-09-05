@@ -1,0 +1,114 @@
+services:
+  app:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo:27017/rebelleintask?directConnection=true
+      - NEXT_TELEMETRY_DISABLED=1
+      - NEXTAUTH_URL=https://rebelleintask.duckdns.org
+      - NEXT_PUBLIC_APP_URL=https://rebelleintask.duckdns.org
+    expose:
+      - 3000
+    depends_on:
+      - mongo
+    restart: unless-stopped
+    networks:
+      - rebellein_network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.app-insecure.rule=Host(`rebelleintask.duckdns.org`)"
+      - "traefik.http.routers.app-insecure.entrypoints=web"
+      - "traefik.http.routers.app-insecure.middlewares=redirect-to-https"
+      - "traefik.http.routers.app-secure.rule=Host(`rebelleintask.duckdns.org`)"
+      - "traefik.http.routers.app-secure.entrypoints=websecure"
+      - "traefik.http.routers.app-secure.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.app-secure.tls=true"
+      - "traefik.http.services.app.loadbalancer.server.port=3000"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+
+  mongo:
+    image: mongo:7
+    container_name: rebelleintask_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_data:/data/db
+    expose:
+      - 27017
+    networks:
+      - rebellein_network
+
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: rebelleintask_mongo_express
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: RebeleinGoettfert2017
+    depends_on:
+      - mongo
+    ports:
+      - 8081:8081
+    networks:
+      - rebellein_network
+
+  duckdns:
+    image: alpine:latest
+    container_name: duckdns_updater
+    environment:
+      SUBDOMAINS: rebelleintask
+      TOKEN: de3aa6cf-bf20-4b8c-b367-149bf463ba48
+    command: >
+      sh -c "apk add --no-cache curl &&
+             while true; do
+               echo DuckDNS Update... &&
+               curl https://www.duckdns.org/update?domains=rebelleintask&token=de3aa6cf-bf20-4b8c-b367-149bf463ba48&ip= &&
+               sleep 300
+             done"
+    restart: unless-stopped
+    networks:
+      - rebellein_network
+
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik_proxy
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.email=goettfert.florian@gmail.com
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --log.level=INFO
+      - --accesslog=true
+    ports:
+      - 80:80
+      - 443:443
+      - 8080:8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_acme:/letsencrypt
+    networks:
+      - rebellein_network
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
+    driver: local
+  traefik_acme:
+    driver: local
+
+networks:
+  rebellein_network:
+    driver: bridge

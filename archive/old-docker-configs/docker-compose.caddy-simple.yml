@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  app:
+    build: 
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo:27017/rebelleintask
+      - NEXT_TELEMETRY_DISABLED=1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongo
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+  mongo:
+    image: mongo:7
+    container_name: rebelleintask_mongo
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - rebelleintask_network
+
+  mongo-init-replica:
+    image: mongo:7
+    depends_on:
+      - mongo
+    entrypoint: ["sh", "-c", "sleep 10 && mongosh --host mongo:27017 --eval 'rs.initiate({_id:\"rs0\",members:[{_id:0,host:\"mongo:27017\"}]})' || true"]
+    restart: "no"
+    networks:
+      - rebelleintask_network
+
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: rebelleintask_mongo_express
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo
+    ports:
+      - "8081:8081"
+    networks:
+      - rebelleintask_network
+
+  # HTTPS Proxy with Caddy (Auto-SSL)
+  caddy:
+    image: caddy:alpine
+    container_name: rebelleintask_caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    command: caddy reverse-proxy --from :443 --to app:3000 --auto-https disable_redirects
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+    environment:
+      - CADDY_TLS_INTERNAL=true
+
+volumes:
+  mongo_data:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
+
+networks:
+  rebelleintask_network:
+    driver: bridge

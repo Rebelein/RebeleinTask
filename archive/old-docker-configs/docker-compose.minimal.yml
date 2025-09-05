@@ -1,0 +1,63 @@
+version: '3.8'
+
+# Minimal-Version: Nur App ohne komplexe MongoDB-Konfiguration
+# Zugriff: http://217.154.223.78:3004
+
+services:
+  app-minimal:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_minimal
+    environment:
+      - NODE_ENV=development
+      # Vereinfachte MongoDB-URI (ohne Replica Set)
+      - MONGODB_URI=mongodb://mongo-simple:27017/rebelleintask?directConnection=true
+      - NEXT_TELEMETRY_DISABLED=1
+    ports:
+      - "3004:3000"
+    depends_on:
+      - mongo-simple
+    restart: unless-stopped
+    networks:
+      - minimal_network
+
+  # Einfache MongoDB ohne Replica Set
+  mongo-simple:
+    image: mongo:7
+    container_name: mongo_simple
+    restart: unless-stopped
+    # Ohne Replica Set - nur normale MongoDB
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_simple_data:/data/db
+    expose:
+      - "27017"
+    networks:
+      - minimal_network
+
+  # Mongo Express für einfache Datenbank
+  mongo-express-simple:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: mongo_express_simple
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo-simple
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo-simple
+    ports:
+      - "8083:8081"
+    networks:
+      - minimal_network
+
+volumes:
+  mongo_simple_data:
+    driver: local
+
+networks:
+  minimal_network:
+    driver: bridge

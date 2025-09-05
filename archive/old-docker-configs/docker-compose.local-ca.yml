@@ -1,0 +1,216 @@
+version: '3.8'
+
+# Lokale CA - Zertifikat manuell vertrauen
+# Für private Nutzung, wenn keine Domain verfügbar
+
+services:
+  app:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app_localca
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo-simple:27017/rebelleintask?directConnection=true
+      - NEXT_TELEMETRY_DISABLED=1
+      - NEXTAUTH_URL=https://217.154.223.78:3000
+      - NEXT_PUBLIC_APP_URL=https://217.154.223.78:3000
+    expose:
+      - "3000"
+    depends_on:
+      - mongo-simple
+    restart: unless-stopped
+    networks:
+      - localca_network
+
+  mongo-simple:
+    image: mongo:7
+    container_name: mongo_localca
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_localca_data:/data/db
+    expose:
+      - "27017"
+    networks:
+      - localca_network
+
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: mongo_express_localca
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo-simple
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo-simple
+    ports:
+      - "8081:8081"
+    networks:
+      - localca_network
+
+  # Lokale Zertifizierungsstelle erstellen
+  local-ca:
+    image: alpine:latest
+    container_name: local_ca_generator
+    volumes:
+      - ca_certs:/ca
+      - server_certs:/certs
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache openssl
+        
+        if [ ! -f /ca/ca.crt ]; then
+          echo "Erstelle lokale Zertifizierungsstelle..."
+          
+          # CA Private Key
+          openssl genrsa -out /ca/ca.key 4096
+          
+          # CA Zertifikat (10 Jahre gültig)
+          openssl req -new -x509 -days 3650 -key /ca/ca.key -out /ca/ca.crt \
+            -subj "/C=DE/ST=NRW/L=Stadt/O=RebeleinTask-CA/CN=RebeleinTask Local CA"
+          
+          echo "Lokale CA erstellt!"
+        fi
+        
+        if [ ! -f /certs/server.crt ]; then
+          echo "Erstelle Server-Zertifikat mit lokaler CA..."
+          
+          # Server Private Key
+          openssl genrsa -out /certs/server.key 2048
+          
+          # Server Certificate Signing Request
+          openssl req -new -key /certs/server.key -out /certs/server.csr \
+            -subj "/C=DE/ST=NRW/L=Stadt/O=RebeleinTask/CN=217.154.223.78"
+          
+          # Server-Zertifikat von CA signieren lassen
+          cat > /tmp/server.ext << 'EOF'
+        authorityKeyIdentifier=keyid,issuer
+        basicConstraints=CA:FALSE
+        keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+        extendedKeyUsage = serverAuth
+        subjectAltName = @alt_names
+
+        [alt_names]
+        DNS.1 = localhost
+        DNS.2 = 217.154.223.78
+        IP.1 = 217.154.223.78
+        IP.2 = 127.0.0.1
+        EOF
+          
+          openssl x509 -req -in /certs/server.csr -CA /ca/ca.crt -CAkey /ca/ca.key \
+            -CAcreateserial -out /certs/server.crt -days 365 -extensions v3_req \
+            -extfile /tmp/server.ext
+          
+          echo "Server-Zertifikat erstellt!"
+          echo ""
+          echo "==== WICHTIG: CA-Zertifikat installieren ===="
+          echo "1. Laden Sie das CA-Zertifikat herunter:"
+          echo "   docker cp local_ca_generator:/ca/ca.crt ./rebelleintask-ca.crt"
+          echo ""
+          echo "2. Installieren Sie es in Ihrem System:"
+          echo "   Windows: Doppelklick -> 'Vertrauenswürdige Stammzertifizierungsstellen'"
+          echo "   Linux: sudo cp rebelleintask-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates"
+          echo "   macOS: Doppelklick -> Schlüsselbund -> 'Immer vertrauen'"
+          echo ""
+          echo "3. Browser neustarten"
+          echo "=============================================="
+        fi
+        
+        # Container läuft weiter für CA-Downloads
+        tail -f /dev/null
+    restart: unless-stopped
+    networks:
+      - localca_network
+
+  # Nginx mit CA-signiertem Zertifikat
+  nginx-ca:
+    image: nginx:alpine
+    container_name: nginx_localca
+    depends_on:
+      - app
+      - local-ca
+    ports:
+      - "3000:443"
+    volumes:
+      - server_certs:/etc/ssl/certs:ro
+    command:
+      - sh
+      - -c
+      - |
+        cat > /etc/nginx/nginx.conf << 'EOF'
+        events { worker_connections 1024; }
+        http {
+            include /etc/nginx/mime.types;
+            server {
+                listen 443 ssl http2;
+                server_name _;
+                
+                ssl_certificate /etc/ssl/certs/server.crt;
+                ssl_certificate_key /etc/ssl/certs/server.key;
+                ssl_protocols TLSv1.2 TLSv1.3;
+                
+                # PWA Headers
+                add_header Strict-Transport-Security "max-age=31536000" always;
+                add_header X-Content-Type-Options nosniff always;
+                add_header X-Frame-Options SAMEORIGIN always;
+                
+                # Service Worker
+                location = /sw.js {
+                    proxy_pass http://app:3000/sw.js;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Forwarded-Proto https;
+                    add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+                    add_header Service-Worker-Allowed "/" always;
+                }
+                
+                # Manifest
+                location = /manifest.webmanifest {
+                    proxy_pass http://app:3000/manifest.webmanifest;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Forwarded-Proto https;
+                    add_header Content-Type "application/manifest+json" always;
+                }
+                
+                location / {
+                    proxy_pass http://app:3000;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Real-IP $$remote_addr;
+                    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto https;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $$http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                    proxy_buffering off;
+                }
+            }
+        }
+        EOF
+        
+        while [ ! -f /etc/ssl/certs/server.crt ]; do
+          echo "Warte auf Server-Zertifikat..."
+          sleep 3
+        done
+        
+        echo "Starte Nginx mit CA-signiertem Zertifikat..."
+        nginx -g "daemon off;"
+    restart: unless-stopped
+    networks:
+      - localca_network
+
+volumes:
+  mongo_localca_data:
+    driver: local
+  ca_certs:
+    driver: local
+  server_certs:
+    driver: local
+
+networks:
+  localca_network:
+    driver: bridge

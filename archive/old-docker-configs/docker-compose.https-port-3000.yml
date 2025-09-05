@@ -1,0 +1,214 @@
+version: '3.8'
+
+# HTTPS über Nginx Proxy auf Port 3000 (statt 443)
+# Zugriff: https://217.154.223.78:3000
+
+services:
+  app:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo:27017/rebelleintask
+      - NEXT_TELEMETRY_DISABLED=1
+    expose:
+      - "3000"  # Nur intern verfügbar
+    depends_on:
+      - mongo
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+  mongo:
+    image: mongo:7
+    container_name: rebelleintask_mongo
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_data:/data/db
+    expose:
+      - "27017"
+    networks:
+      - rebelleintask_network
+
+  mongo-init-replica:
+    image: mongo:7
+    depends_on:
+      - mongo
+    entrypoint: ["sh", "-c", "sleep 10 && mongosh --host mongo:27017 --eval 'rs.initiate({_id:\"rs0\",members:[{_id:0,host:\"mongo:27017\"}]})' || true"]
+    restart: "no"
+    networks:
+      - rebelleintask_network
+
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: rebelleintask_mongo_express
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo
+    ports:
+      - "8081:8081"  # HTTP für Mongo Express
+    networks:
+      - rebelleintask_network
+
+  # SSL-Zertifikat Generator
+  ssl-gen:
+    image: alpine:latest
+    container_name: ssl_generator
+    volumes:
+      - ssl_certs:/etc/ssl/certs/custom
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache openssl
+        if [ ! -f /etc/ssl/certs/custom/server.crt ]; then
+          echo "Generiere selbstsigniertes SSL-Zertifikat für PWA..."
+          
+          cat > /tmp/ssl.conf << 'EOL'
+        [req]
+        distinguished_name = req_distinguished_name
+        req_extensions = v3_req
+        prompt = no
+
+        [req_distinguished_name]
+        C=DE
+        ST=NRW
+        L=Stadt
+        O=RebeleinTask
+        CN=217.154.223.78
+
+        [v3_req]
+        basicConstraints = CA:FALSE
+        keyUsage = nonRepudiation, digitalSignature, keyEncipherment
+        extendedKeyUsage = serverAuth
+        subjectAltName = @alt_names
+
+        [alt_names]
+        IP.1 = 217.154.223.78
+        DNS.1 = localhost
+        EOL
+
+          # Zertifikat mit korrekten Extensions erstellen
+          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /etc/ssl/certs/custom/server.key \
+            -out /etc/ssl/certs/custom/server.crt \
+            -config /tmp/ssl.conf \
+            -extensions v3_req
+          
+          # DH-Parameter für bessere SSL-Sicherheit generieren
+          echo "Generiere DH-Parameter..."
+          openssl dhparam -out /etc/ssl/certs/custom/dhparam.pem 2048
+            
+          # Zertifikat-Details ausgeben
+          echo "SSL-Zertifikat erstellt!"
+          echo "Zertifikat-Details:"
+          openssl x509 -in /etc/ssl/certs/custom/server.crt -text -noout | grep -A 5 "X509v3 extensions" || echo "Extensions nicht sichtbar"
+        else
+          echo "SSL-Zertifikat bereits vorhanden."
+        fi
+    restart: "no"
+    networks:
+      - rebelleintask_network
+
+  # Nginx HTTPS Proxy auf Port 3000
+  nginx:
+    image: nginx:alpine
+    container_name: rebelleintask_nginx_3000
+    depends_on:
+      - app
+      - ssl-gen
+    ports:
+      - "3000:3000"  # HTTPS auf Port 3000 statt 443
+    volumes:
+      - ssl_certs:/etc/ssl/certs/custom:ro
+    command:
+      - sh
+      - -c
+      - |
+        cat <<'EOF' > /etc/nginx/nginx.conf
+        events {
+            worker_connections 1024;
+        }
+
+        http {
+            # Verbesserte SSL-Konfiguration
+            ssl_protocols TLSv1.2 TLSv1.3;
+            ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+            ssl_prefer_server_ciphers off;
+            ssl_session_cache shared:SSL:10m;
+            ssl_session_timeout 10m;
+
+            # HTTPS Server auf Port 3000
+            server {
+                listen 3000 ssl;
+                http2 on;
+                server_name _;
+
+                # SSL-Zertifikate
+                ssl_certificate /etc/ssl/certs/custom/server.crt;
+                ssl_certificate_key /etc/ssl/certs/custom/server.key;
+                
+                # Zusätzliche SSL-Sicherheit
+                ssl_dhparam /etc/ssl/certs/custom/dhparam.pem;
+                ssl_ecdh_curve secp384r1;
+                ssl_session_tickets off;
+                ssl_stapling off;
+                
+                # Security Headers für PWA
+                add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+                add_header X-Frame-Options DENY always;
+                add_header X-Content-Type-Options nosniff always;
+                add_header Referrer-Policy strict-origin-when-cross-origin always;
+                add_header X-XSS-Protection "1; mode=block" always;
+
+                location / {
+                    proxy_pass http://app:3000;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Real-IP $$remote_addr;
+                    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto https;
+                    proxy_set_header X-Forwarded-Host $$host;
+                    
+                    # WebSocket Support
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $$http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                    
+                    # Timeouts
+                    proxy_connect_timeout 60s;
+                    proxy_send_timeout 60s;
+                    proxy_read_timeout 60s;
+                }
+            }
+        }
+        EOF
+        
+        echo "Warte auf SSL-Zertifikate und DH-Parameter..."
+        while [ ! -f /etc/ssl/certs/custom/server.crt ] || [ ! -f /etc/ssl/certs/custom/dhparam.pem ]; do
+          sleep 2
+        done
+        echo "SSL-Zertifikate und DH-Parameter gefunden, starte Nginx auf Port 3000..."
+        exec nginx -g "daemon off;"
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+volumes:
+  mongo_data:
+    driver: local
+  ssl_certs:
+    driver: local
+
+networks:
+  rebelleintask_network:
+    driver: bridge

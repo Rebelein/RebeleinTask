@@ -1,0 +1,216 @@
+version: '3.8'
+
+# HTTPS-Version basierend auf der funktionierenden Minimal-Konfiguration
+# HTTPS: https://217.154.223.78:3000 (für PWA)
+# HTTP: http://217.154.223.78:3001 (Backup)
+
+services:
+  app:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app_working
+    environment:
+      - NODE_ENV=production
+      # Funktionierende MongoDB-URI (ohne Replica Set)
+      - MONGODB_URI=mongodb://mongo-simple:27017/rebelleintask?directConnection=true
+      - NEXT_TELEMETRY_DISABLED=1
+      # HTTPS-URLs für PWA
+      - NEXTAUTH_URL=https://217.154.223.78:3000
+      - NEXT_PUBLIC_APP_URL=https://217.154.223.78:3000
+    expose:
+      - "3000"
+    depends_on:
+      - mongo-simple
+    restart: unless-stopped
+    networks:
+      - working_network
+
+  # Einfache MongoDB (funktioniert!)
+  mongo-simple:
+    image: mongo:7
+    container_name: mongo_simple_working
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_working_data:/data/db
+    expose:
+      - "27017"
+    networks:
+      - working_network
+
+  # Mongo Express
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: mongo_express_working
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo-simple
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo-simple
+    ports:
+      - "8081:8081"
+    networks:
+      - working_network
+
+  # SSL-Zertifikat Generator
+  ssl-gen:
+    image: alpine:latest
+    container_name: ssl_generator_working
+    volumes:
+      - ssl_certs_working:/etc/ssl/certs/custom
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache openssl
+        if [ ! -f /etc/ssl/certs/custom/server.crt ]; then
+          echo "Generiere PWA-kompatibles SSL-Zertifikat..."
+          
+          # Einfache, aber funktionierende Zertifikat-Erstellung
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout /etc/ssl/certs/custom/server.key \
+            -out /etc/ssl/certs/custom/server.crt \
+            -days 365 \
+            -subj "/C=DE/ST=NRW/L=Stadt/O=RebeleinTask/CN=217.154.223.78" \
+            -addext "subjectAltName=IP:217.154.223.78,DNS:localhost,DNS:217.154.223.78" \
+            -addext "keyUsage=digitalSignature,keyEncipherment" \
+            -addext "extendedKeyUsage=serverAuth,clientAuth"
+            
+          echo "PWA-kompatibles SSL-Zertifikat erstellt!"
+        fi
+    restart: "no"
+    networks:
+      - working_network
+
+  # HTTP Proxy auf Port 3001 (Backup)
+  nginx-http:
+    image: nginx:alpine
+    container_name: nginx_http_working
+    depends_on:
+      - app
+    ports:
+      - "3001:80"
+    command:
+      - sh
+      - -c
+      - |
+        cat <<'EOF' > /etc/nginx/nginx.conf
+        events { worker_connections 1024; }
+        http {
+            include /etc/nginx/mime.types;
+            server {
+                listen 80;
+                server_name _;
+                location / {
+                    proxy_pass http://app:3000;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Real-IP $$remote_addr;
+                    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto http;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $$http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                }
+            }
+        }
+        EOF
+        exec nginx -g "daemon off;"
+    restart: unless-stopped
+    networks:
+      - working_network
+
+  # HTTPS Proxy auf Port 3000 (für PWA)
+  nginx-https:
+    image: nginx:alpine
+    container_name: nginx_https_working
+    depends_on:
+      - app
+      - ssl-gen
+    ports:
+      - "3000:443"
+    volumes:
+      - ssl_certs_working:/etc/ssl/certs/custom:ro
+    command:
+      - sh
+      - -c
+      - |
+        cat <<'EOF' > /etc/nginx/nginx.conf
+        events { worker_connections 1024; }
+        http {
+            include /etc/nginx/mime.types;
+            server {
+                listen 443 ssl;
+                server_name _;
+                
+                ssl_certificate /etc/ssl/certs/custom/server.crt;
+                ssl_certificate_key /etc/ssl/certs/custom/server.key;
+                ssl_protocols TLSv1.2 TLSv1.3;
+                
+                # PWA Security Headers (weniger restriktiv für selbstsignierte Zertifikate)
+                add_header Strict-Transport-Security "max-age=31536000" always;
+                add_header X-Frame-Options SAMEORIGIN always;
+                add_header X-Content-Type-Options nosniff always;
+                add_header Referrer-Policy strict-origin-when-cross-origin always;
+                
+                # Service Worker Support
+                location /sw.js {
+                    proxy_pass http://app:3000;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Real-IP $$remote_addr;
+                    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto https;
+                    # Service Worker spezifische Headers
+                    add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+                    add_header Pragma "no-cache" always;
+                    add_header Service-Worker-Allowed "/" always;
+                }
+                
+                # Manifest-Datei optimieren
+                location /manifest.webmanifest {
+                    proxy_pass http://app:3000;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Real-IP $$remote_addr;
+                    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto https;
+                    add_header Content-Type "application/manifest+json" always;
+                    add_header Cache-Control "public, max-age=86400" always;
+                }
+                
+                location / {
+                    proxy_pass http://app:3000;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Real-IP $$remote_addr;
+                    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto https;
+                    proxy_set_header X-Forwarded-Host $$host;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $$http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                    proxy_buffering off;
+                }
+            }
+        }
+        EOF
+        
+        while [ ! -f /etc/ssl/certs/custom/server.crt ]; do
+          sleep 2
+        done
+        exec nginx -g "daemon off;"
+    restart: unless-stopped
+    networks:
+      - working_network
+
+volumes:
+  mongo_working_data:
+    driver: local
+  ssl_certs_working:
+    driver: local
+
+networks:
+  working_network:
+    driver: bridge

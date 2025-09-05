@@ -1,0 +1,131 @@
+version: '3.8'
+
+# Portainer-Stack: RebeleinTask mit HTTPS (selbstsigniertes Zertifikat)
+# Schritte:
+# 1. Optional DOMAIN & CERT_SUBJ anpassen (oder IP lassen)
+# 2. In Portainer -> Stacks -> Deploy (Compose Datei einfügen)
+# 3. Zugriff: https://<SERVER-IP> (Browser warnt wegen selbstsigniertem Zertifikat)
+# 4. Für echte Domain später Nginx/Caddy mit Let's Encrypt nutzen (Hinweis unten)
+
+services:
+  app:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo:27017/rebelleintask
+      - NEXT_TELEMETRY_DISABLED=1
+    # Debug: Port direkt exponieren um App ohne Proxy zu testen (http://SERVER-IP:3000)
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongo
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+  mongo:
+    image: mongo:7
+    container_name: rebelleintask_mongo
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_data:/data/db
+    expose:
+      - "27017"
+    networks:
+      - rebelleintask_network
+
+  mongo-init-replica:
+    image: mongo:7
+    depends_on:
+      - mongo
+    entrypoint: ["sh", "-c", "sleep 10 && mongosh --host mongo:27017 --eval 'rs.initiate({_id:\"rs0\",members:[{_id:0,host:\"mongo:27017\"}]})' || true"]
+    restart: "no"
+    networks:
+      - rebelleintask_network
+
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: rebelleintask_mongo_express
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo
+    ports:
+      - "8081:8081"
+    networks:
+      - rebelleintask_network
+
+  # Caddy Reverse Proxy (automatisches internes Zertifikat)
+  caddy:
+    image: caddy:alpine
+    container_name: rebelleintask_caddy
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    command:
+      - sh
+      - -c
+      - |
+        cat <<'EOF' > /etc/caddy/Caddyfile
+        {
+          admin off
+          debug
+        }
+
+        :80 {
+          redir https://{host}{uri}
+        }
+
+        :443 {
+          tls internal
+          log {
+            output stdout
+            format console
+            level DEBUG
+          }
+          reverse_proxy app:3000
+        }
+        EOF
+        echo "Caddyfile erzeugt:"; cat /etc/caddy/Caddyfile;
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+volumes:
+  mongo_data:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
+
+networks:
+  rebelleintask_network:
+    driver: bridge
+
+# Für echte Domain + Let's Encrypt Empfehlung:
+# 1) Statt ssl-gen + nginx -> Caddy verwenden (auto HTTPS) ODER Traefik.
+# 2) A-Record auf Server-IP zeigen lassen.
+# 3) Beispiel (Caddy):
+#    caddy:
+#      image: caddy:latest
+#      ports: ["80:80", "443:443"]
+#      volumes: ["caddy_data:/data", "caddy_config:/config"]
+#      command: caddy reverse-proxy --from yourdomain.tld --to app:3000
+#    Volumes entsprechend ergänzen.

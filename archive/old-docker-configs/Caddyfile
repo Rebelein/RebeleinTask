@@ -1,0 +1,28 @@
+# Caddy Konfiguration für Container-Umgebung
+# Hinweis: Für reine IPs stellt Caddy kein öffentliches Let's Encrypt Cert aus.
+# Mit 'tls internal' wird ein internes (selbstsigniertes) Zertifikat generiert.
+
+{
+    admin off
+    # Optional: globale Zeitouts/Protokolle
+    # log {
+    #   output stdout
+    #   format console
+    # }
+}
+
+# HTTP auf HTTPS weiterleiten für IP und localhost
+http://217.154.223.78, http://localhost {
+    redir https://{host}{uri} 301
+}
+
+# HTTPS (intern signiert)
+217.154.223.78, localhost {
+    tls internal
+    reverse_proxy app:3000
+}
+
+# Beispiel für spätere echte Domain (automatisches Let's Encrypt):
+# yourdomain.tld {
+#     reverse_proxy app:3000
+# }

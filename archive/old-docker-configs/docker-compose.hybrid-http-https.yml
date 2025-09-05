@@ -1,0 +1,184 @@
+version: '3.8'
+
+# Hybride Lösung: HTTP auf 3001, HTTPS auf 3000
+# HTTP Test: http://217.154.223.78:3001
+# HTTPS PWA: https://217.154.223.78:3000
+
+services:
+  app:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo:27017/rebelleintask
+      - NEXT_TELEMETRY_DISABLED=1
+    expose:
+      - "3000"
+    depends_on:
+      - mongo
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+  mongo:
+    image: mongo:7
+    container_name: rebelleintask_mongo
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_data:/data/db
+    expose:
+      - "27017"
+    networks:
+      - rebelleintask_network
+
+  mongo-init-replica:
+    image: mongo:7
+    depends_on:
+      - mongo
+    entrypoint: ["sh", "-c", "sleep 10 && mongosh --host mongo:27017 --eval 'rs.initiate({_id:\"rs0\",members:[{_id:0,host:\"mongo:27017\"}]})' || true"]
+    restart: "no"
+    networks:
+      - rebelleintask_network
+
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: rebelleintask_mongo_express
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo
+    ports:
+      - "8081:8081"
+    networks:
+      - rebelleintask_network
+
+  # SSL-Zertifikat Generator
+  ssl-gen:
+    image: alpine:latest
+    container_name: ssl_generator
+    volumes:
+      - ssl_certs:/etc/ssl/certs/custom
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache openssl
+        if [ ! -f /etc/ssl/certs/custom/server.crt ]; then
+          echo "Generiere SSL-Zertifikat..."
+          openssl req -x509 -newkey rsa:2048 -keyout /etc/ssl/certs/custom/server.key \
+            -out /etc/ssl/certs/custom/server.crt -sha256 -days 365 -nodes \
+            -subj "/C=DE/ST=NRW/L=Stadt/O=RebeleinTask/CN=217.154.223.78" \
+            -addext "subjectAltName=IP:217.154.223.78,DNS:localhost" \
+            -addext "keyUsage=digitalSignature,keyEncipherment" \
+            -addext "extendedKeyUsage=serverAuth"
+          echo "SSL-Zertifikat erstellt!"
+        fi
+    restart: "no"
+    networks:
+      - rebelleintask_network
+
+  # HTTP Reverse Proxy auf Port 3001 (zum Testen)
+  nginx-http:
+    image: nginx:alpine
+    container_name: rebelleintask_nginx_http
+    depends_on:
+      - app
+    ports:
+      - "3001:80"  # HTTP auf Port 3001
+    command:
+      - sh
+      - -c
+      - |
+        cat <<'EOF' > /etc/nginx/nginx.conf
+        events {
+            worker_connections 1024;
+        }
+        http {
+            include /etc/nginx/mime.types;
+            server {
+                listen 80;
+                server_name _;
+                location / {
+                    proxy_pass http://app:3000;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Real-IP $$remote_addr;
+                    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto http;
+                }
+            }
+        }
+        EOF
+        exec nginx -g "daemon off;"
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+  # HTTPS Reverse Proxy auf Port 3000
+  nginx-https:
+    image: nginx:alpine
+    container_name: rebelleintask_nginx_https
+    depends_on:
+      - app
+      - ssl-gen
+    ports:
+      - "3000:443"  # HTTPS auf Port 3000
+    volumes:
+      - ssl_certs:/etc/ssl/certs/custom:ro
+    command:
+      - sh
+      - -c
+      - |
+        cat <<'EOF' > /etc/nginx/nginx.conf
+        events {
+            worker_connections 1024;
+        }
+        http {
+            include /etc/nginx/mime.types;
+            server {
+                listen 443 ssl;
+                server_name _;
+                
+                ssl_certificate /etc/ssl/certs/custom/server.crt;
+                ssl_certificate_key /etc/ssl/certs/custom/server.key;
+                ssl_protocols TLSv1.2 TLSv1.3;
+                
+                location / {
+                    proxy_pass http://app:3000;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Real-IP $$remote_addr;
+                    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto https;
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $$http_upgrade;
+                    proxy_set_header Connection "upgrade";
+                }
+            }
+        }
+        EOF
+        
+        while [ ! -f /etc/ssl/certs/custom/server.crt ]; do
+          sleep 2
+        done
+        exec nginx -g "daemon off;"
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+volumes:
+  mongo_data:
+    driver: local
+  ssl_certs:
+    driver: local
+
+networks:
+  rebelleintask_network:
+    driver: bridge

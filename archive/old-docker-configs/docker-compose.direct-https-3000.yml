@@ -1,0 +1,133 @@
+version: '3.8'
+
+# HTTPS direkt auf Port 3000 (ohne Reverse Proxy)
+# Zugriff: https://217.154.223.78:3000
+
+services:
+  app:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo:27017/rebelleintask
+      - NEXT_TELEMETRY_DISABLED=1
+      # SSL-Zertifikate für die App verfügbar machen
+      - SSL_CERT_PATH=/etc/ssl/certs/custom/server.crt
+      - SSL_KEY_PATH=/etc/ssl/certs/custom/server.key
+      - HTTPS_PORT=3000
+    ports:
+      - "3000:3000"  # HTTPS direkt auf Port 3000
+    volumes:
+      - ssl_certs:/etc/ssl/certs/custom:ro
+    depends_on:
+      - mongo
+      - ssl-gen
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+  mongo:
+    image: mongo:7
+    container_name: rebelleintask_mongo
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_data:/data/db
+    expose:
+      - "27017"
+    networks:
+      - rebelleintask_network
+
+  mongo-init-replica:
+    image: mongo:7
+    depends_on:
+      - mongo
+    entrypoint: ["sh", "-c", "sleep 10 && mongosh --host mongo:27017 --eval 'rs.initiate({_id:\"rs0\",members:[{_id:0,host:\"mongo:27017\"}]})' || true"]
+    restart: "no"
+    networks:
+      - rebelleintask_network
+
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: rebelleintask_mongo_express
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo
+    ports:
+      - "8081:8081"  # HTTP für Mongo Express
+    networks:
+      - rebelleintask_network
+
+  # SSL-Zertifikat Generator
+  ssl-gen:
+    image: alpine:latest
+    container_name: ssl_generator
+    volumes:
+      - ssl_certs:/etc/ssl/certs/custom
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache openssl
+        if [ ! -f /etc/ssl/certs/custom/server.crt ]; then
+          echo "Generiere selbstsigniertes SSL-Zertifikat für PWA..."
+          
+          # Erstelle eine OpenSSL-Konfigurationsdatei für SAN
+          cat > /tmp/ssl.conf << 'EOL'
+        [req]
+        distinguished_name = req_distinguished_name
+        req_extensions = v3_req
+        prompt = no
+
+        [req_distinguished_name]
+        C=DE
+        ST=NRW
+        L=Stadt
+        O=RebeleinTask
+        CN=217.154.223.78
+
+        [v3_req]
+        keyUsage = keyEncipherment, dataEncipherment
+        extendedKeyUsage = serverAuth
+        subjectAltName = @alt_names
+
+        [alt_names]
+        IP.1 = 217.154.223.78
+        DNS.1 = localhost
+        EOL
+
+          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /etc/ssl/certs/custom/server.key \
+            -out /etc/ssl/certs/custom/server.crt \
+            -config /tmp/ssl.conf \
+            -extensions v3_req
+            
+          echo "SSL-Zertifikat mit SAN für PWA erstellt!"
+          echo "Zertifikat-Details:"
+          openssl x509 -in /etc/ssl/certs/custom/server.crt -text -noout | grep -A 1 "Subject Alternative Name" || echo "SAN nicht gefunden"
+        else
+          echo "SSL-Zertifikat bereits vorhanden."
+        fi
+        # Container beenden nach Zertifikatserstellung
+    restart: "no"
+    networks:
+      - rebelleintask_network
+
+volumes:
+  mongo_data:
+    driver: local
+  ssl_certs:
+    driver: local
+
+networks:
+  rebelleintask_network:
+    driver: bridge

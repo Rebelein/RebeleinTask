@@ -1,0 +1,144 @@
+version: '3.8'
+
+# Debug-Version mit direktem App-Zugriff und detaillierten Logs
+# Zugriff: http://217.154.223.78:3002 (App direkt ohne Proxy)
+
+services:
+  app:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app_debug
+    environment:
+      - NODE_ENV=development  # Development für bessere Logs
+      - MONGODB_URI=mongodb://mongo:27017/rebelleintask
+      - NEXT_TELEMETRY_DISABLED=1
+      - DEBUG=*  # Alle Debug-Logs aktivieren
+      - VERBOSE=true
+    ports:
+      - "3002:3000"  # Direkter Zugriff auf die App
+    depends_on:
+      - mongo
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+    # Logs in Echtzeit anzeigen
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mongo:
+    image: mongo:7
+    container_name: rebelleintask_mongo_debug
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--logpath", "/var/log/mongodb/mongod.log", "--logappend"]
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_data_debug:/data/db
+      - mongo_logs:/var/log/mongodb
+    expose:
+      - "27017"
+    networks:
+      - rebelleintask_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mongo-init-replica:
+    image: mongo:7
+    depends_on:
+      - mongo
+    entrypoint: ["sh", "-c", "sleep 15 && echo 'Initialisiere MongoDB Replica Set...' && mongosh --host mongo:27017 --eval 'rs.initiate({_id:\"rs0\",members:[{_id:0,host:\"mongo:27017\"}]})' && echo 'Replica Set initialisiert!' || echo 'Replica Set bereits vorhanden oder Fehler'"]
+    restart: "no"
+    networks:
+      - rebelleintask_network
+
+  # Mongo Express für Datenbank-Debugging
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: rebelleintask_mongo_express_debug
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo
+    ports:
+      - "8082:8081"  # Anderer Port für Debug
+    networks:
+      - rebelleintask_network
+
+  # Einfache Nginx-Debug-Proxy (optional)
+  nginx-debug:
+    image: nginx:alpine
+    container_name: rebelleintask_nginx_debug
+    depends_on:
+      - app
+    ports:
+      - "3003:80"  # Proxy-Test
+    command:
+      - sh
+      - -c
+      - |
+        cat <<'EOF' > /etc/nginx/nginx.conf
+        events {
+            worker_connections 1024;
+        }
+        http {
+            include /etc/nginx/mime.types;
+            
+            # Debug-Logs
+            access_log /var/log/nginx/access.log;
+            error_log /var/log/nginx/error.log debug;
+            
+            server {
+                listen 80;
+                server_name _;
+                
+                location / {
+                    proxy_pass http://app:3000;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Real-IP $$remote_addr;
+                    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto http;
+                    
+                    # Debug-Headers
+                    add_header X-Debug-Backend "app:3000" always;
+                    add_header X-Debug-Timestamp "$$date_gmt" always;
+                    
+                    # Längere Timeouts für Debugging
+                    proxy_connect_timeout 120s;
+                    proxy_send_timeout 120s;
+                    proxy_read_timeout 120s;
+                }
+                
+                # Health-Check-Endpoint
+                location /nginx-health {
+                    return 200 "Nginx läuft - $$date_gmt";
+                    add_header Content-Type text/plain;
+                }
+            }
+        }
+        EOF
+        echo "Nginx Debug-Konfiguration gestartet"
+        exec nginx -g "daemon off;"
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+volumes:
+  mongo_data_debug:
+    driver: local
+  mongo_logs:
+    driver: local
+
+networks:
+  rebelleintask_network:
+    driver: bridge

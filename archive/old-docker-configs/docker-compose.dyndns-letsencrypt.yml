@@ -1,0 +1,158 @@
+version: '3.8'
+
+# DynDNS + Let's Encrypt Lösung für rebelleintask.duckdns.org
+# Automatische SSL-Zertifikate mit Traefik und Let's Encrypt
+# Domain bereits registriert: rebelleintask.duckdns.org
+# DuckDNS Token konfiguriert
+
+services:
+  app:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app_dyndns
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo-simple:27017/rebelleintask?directConnection=true
+      - NEXT_TELEMETRY_DISABLED=1
+      # DynDNS-URLs mit rebelleintask.duckdns.org
+      - NEXTAUTH_URL=https://rebelleintask.duckdns.org
+      - NEXT_PUBLIC_APP_URL=https://rebelleintask.duckdns.org
+    expose:
+      - "3000"
+    depends_on:
+      - mongo-simple
+    restart: unless-stopped
+    networks:
+      - dyndns_network
+
+  mongo-simple:
+    image: mongo:7
+    container_name: mongo_dyndns
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_dyndns_data:/data/db
+    expose:
+      - "27017"
+    networks:
+      - dyndns_network
+
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: mongo_express_dyndns
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo-simple
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo-simple
+    expose:
+      - "8081"
+    networks:
+      - dyndns_network
+
+  # DuckDNS IP-Update (hält DynDNS aktuell)
+  duckdns:
+    image: alpine:latest
+    container_name: duckdns_updater
+    environment:
+      # DuckDNS-Daten für rebelleintask.duckdns.org
+      - SUBDOMAINS=rebelleintask  # Nur der Name ohne .duckdns.org
+      - TOKEN=de3aa6cf-bf20-4b8c-b367-149bf463ba48  # Ihr DuckDNS-Token
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache curl
+        while true; do
+          echo "Update DuckDNS IP..."
+          curl "https://www.duckdns.org/update?domains=$${SUBDOMAINS}&token=$${TOKEN}&ip="
+          echo "Warte 5 Minuten..."
+          sleep 300
+        done
+    restart: unless-stopped
+
+  # Traefik mit automatischem Let's Encrypt
+  traefik:
+    image: traefik:v3.0
+    container_name: traefik_letsencrypt
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.email=goettfert.florian@gmail.com
+      - --certificatesresolvers.letsencrypt.acme.storage=/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      # Für Testing: --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"  # Traefik Dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_acme:/acme.json
+    networks:
+      - dyndns_network
+    restart: unless-stopped
+
+  # App mit Traefik-Labels
+  app-proxy:
+    image: nginx:alpine
+    container_name: app_proxy_traefik
+    depends_on:
+      - app
+    command:
+      - sh
+      - -c
+      - |
+        cat > /etc/nginx/nginx.conf << 'EOF'
+        events { worker_connections 1024; }
+        http {
+            include /etc/nginx/mime.types;
+            server {
+                listen 80;
+                server_name _;
+                location / {
+                    proxy_pass http://app:3000;
+                    proxy_set_header Host $$host;
+                    proxy_set_header X-Real-IP $$remote_addr;
+                    proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $$scheme;
+                }
+            }
+        }
+        EOF
+        nginx -g "daemon off;"
+    labels:
+      - "traefik.enable=true"
+      # HTTP -> HTTPS Redirect
+      - "traefik.http.routers.app-redirect.rule=Host(`rebelleintask.duckdns.org`)"
+      - "traefik.http.routers.app-redirect.entrypoints=web"
+      - "traefik.http.routers.app-redirect.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      # HTTPS Router
+      - "traefik.http.routers.app-secure.rule=Host(`rebelleintask.duckdns.org`)"
+      - "traefik.http.routers.app-secure.entrypoints=websecure"
+      - "traefik.http.routers.app-secure.tls.certresolver=letsencrypt"
+      - "traefik.http.services.app.loadbalancer.server.port=80"
+    networks:
+      - dyndns_network
+    restart: unless-stopped
+
+volumes:
+  mongo_dyndns_data:
+    driver: local
+  traefik_acme:
+    driver: local
+
+networks:
+  dyndns_network:
+    driver: bridge

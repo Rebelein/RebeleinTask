@@ -1,0 +1,144 @@
+version: '3.8'
+
+# Let's Encrypt mit echter Domain
+# Voraussetzung: Domain zeigt per A-Record auf 217.154.223.78
+# Ersetzen Sie "ihre-domain.de" mit Ihrer echten Domain
+
+services:
+  app:
+    build:
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app_domain
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo-simple:27017/rebelleintask?directConnection=true
+      - NEXT_TELEMETRY_DISABLED=1
+      # Domain-URLs (ANPASSEN!)
+      - NEXTAUTH_URL=https://ihre-domain.de
+      - NEXT_PUBLIC_APP_URL=https://ihre-domain.de
+    expose:
+      - "3000"
+    depends_on:
+      - mongo-simple
+    restart: unless-stopped
+    networks:
+      - domain_network
+
+  mongo-simple:
+    image: mongo:7
+    container_name: mongo_domain
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_domain_data:/data/db
+    expose:
+      - "27017"
+    networks:
+      - domain_network
+
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: mongo_express_domain
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo-simple
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo-simple
+    expose:
+      - "8081"
+    networks:
+      - domain_network
+
+  # Caddy mit automatischem Let's Encrypt
+  caddy:
+    image: caddy:alpine
+    container_name: caddy_letsencrypt
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      # WICHTIG: Ersetzen Sie mit Ihrer Domain und E-Mail
+      - DOMAIN=ihre-domain.de
+      - EMAIL=ihre-email@domain.de
+    command:
+      - sh
+      - -c
+      - |
+        cat > /etc/caddy/Caddyfile << 'EOF'
+        {
+          email ihre-email@domain.de
+          admin off
+        }
+
+        # HTTP -> HTTPS Redirect
+        http://ihre-domain.de {
+          redir https://ihre-domain.de{uri}
+        }
+
+        # HTTPS mit Let's Encrypt (automatisch!)
+        https://ihre-domain.de {
+          # Automatische SSL-Zertifikate von Let's Encrypt
+          
+          # PWA Headers
+          header {
+            Strict-Transport-Security "max-age=31536000; includeSubDomains"
+            X-Content-Type-Options nosniff
+            X-Frame-Options SAMEORIGIN
+            Referrer-Policy strict-origin-when-cross-origin
+          }
+
+          # Service Worker
+          handle /sw.js {
+            reverse_proxy app:3000
+            header Cache-Control "no-cache, no-store, must-revalidate"
+            header Service-Worker-Allowed "/"
+          }
+
+          # Manifest
+          handle /manifest.webmanifest {
+            reverse_proxy app:3000
+            header Content-Type "application/manifest+json"
+          }
+
+          # Alle anderen Requests
+          reverse_proxy app:3000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto https
+          }
+        }
+
+        # Admin Interface (optional)
+        https://admin.ihre-domain.de {
+          reverse_proxy mongo-express:8081
+        }
+        EOF
+        
+        echo "Caddy startet mit Let's Encrypt für: ihre-domain.de"
+        caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    restart: unless-stopped
+    networks:
+      - domain_network
+
+volumes:
+  mongo_domain_data:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
+
+networks:
+  domain_network:
+    driver: bridge

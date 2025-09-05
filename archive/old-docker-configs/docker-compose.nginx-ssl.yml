@@ -1,0 +1,192 @@
+version: '3.8'
+
+services:
+  app:
+    build: 
+      context: https://github.com/Rebelein/RebeleinTask.git
+      dockerfile: Dockerfile
+    container_name: rebelleintask_app
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongo:27017/rebelleintask
+      - NEXT_TELEMETRY_DISABLED=1
+    expose:
+      - "3000"
+    depends_on:
+      - mongo
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+  # Nginx HTTPS Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: rebelleintask_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - nginx_config:/etc/nginx
+      - nginx_ssl:/etc/nginx/ssl
+    depends_on:
+      - app
+      - ssl-gen
+      - nginx-config
+    restart: unless-stopped
+    networks:
+      - rebelleintask_network
+
+  # SSL Certificate Generator
+  ssl-gen:
+    image: alpine:latest
+    container_name: ssl_generator
+    volumes:
+      - nginx_ssl:/ssl
+    command: >
+      sh -c "
+        apk add --no-cache openssl &&
+        if [ ! -f /ssl/cert.pem ]; then
+          echo 'Generating self-signed SSL certificate...' &&
+          openssl req -x509 -nodes -days 365 -newkey rsa:2048 
+            -keyout /ssl/key.pem 
+            -out /ssl/cert.pem 
+            -subj '/C=DE/ST=Germany/L=City/O=RebeleinTask/OU=IT/CN=rebelleintask.local' &&
+          echo 'SSL certificate generated successfully!'
+        else
+          echo 'SSL certificate already exists.'
+        fi &&
+        echo 'SSL setup complete. Certificate valid for 365 days.'
+      "
+    restart: "no"
+
+  # Nginx Configuration Generator
+  nginx-config:
+    image: alpine:latest
+    container_name: nginx_config_gen
+    volumes:
+      - nginx_config:/config
+    command: >
+      sh -c "
+        mkdir -p /config &&
+        cat > /config/nginx.conf << 'EOF'
+        events {
+            worker_connections 1024;
+        }
+
+        http {
+            upstream app {
+                server app:3000;
+            }
+
+            # Security headers
+            add_header X-Frame-Options DENY;
+            add_header X-Content-Type-Options nosniff;
+            add_header X-XSS-Protection '1; mode=block';
+
+            # Redirect HTTP to HTTPS
+            server {
+                listen 80;
+                server_name _;
+                location / {
+                    return 301 https://\$host\$request_uri;
+                }
+            }
+
+            # HTTPS server
+            server {
+                listen 443 ssl http2;
+                server_name _;
+
+                ssl_certificate /etc/nginx/ssl/cert.pem;
+                ssl_certificate_key /etc/nginx/ssl/key.pem;
+                
+                # Modern SSL configuration
+                ssl_protocols TLSv1.2 TLSv1.3;
+                ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+                ssl_prefer_server_ciphers off;
+                ssl_session_cache shared:SSL:10m;
+                ssl_session_timeout 10m;
+
+                # HSTS (HTTP Strict Transport Security)
+                add_header Strict-Transport-Security 'max-age=31536000; includeSubDomains' always;
+
+                # Root location
+                location / {
+                    proxy_pass http://app;
+                    proxy_set_header Host \$host;
+                    proxy_set_header X-Real-IP \$remote_addr;
+                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto \$scheme;
+                    proxy_set_header X-Forwarded-Host \$host;
+                    proxy_set_header X-Forwarded-Port \$server_port;
+                    
+                    # WebSocket support
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade \$http_upgrade;
+                    proxy_set_header Connection 'upgrade';
+                    proxy_cache_bypass \$http_upgrade;
+                }
+
+                # Health check
+                location /health {
+                    access_log off;
+                    return 200 'healthy';
+                    add_header Content-Type text/plain;
+                }
+            }
+        }
+        EOF
+        echo 'Nginx configuration generated successfully!'
+      "
+    restart: "no"
+
+  mongo:
+    image: mongo:7
+    container_name: rebelleintask_mongo
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    environment:
+      MONGO_INITDB_DATABASE: rebelleintask
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - rebelleintask_network
+
+  mongo-init-replica:
+    image: mongo:7
+    depends_on:
+      - mongo
+    entrypoint: ["sh", "-c", "sleep 10 && mongosh --host mongo:27017 --eval 'rs.initiate({_id:\"rs0\",members:[{_id:0,host:\"mongo:27017\"}]})' || true"]
+    restart: "no"
+    networks:
+      - rebelleintask_network
+
+  mongo-express:
+    image: mongo-express:1.0.2-18-alpine3.19
+    container_name: rebelleintask_mongo_express
+    restart: unless-stopped
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    depends_on:
+      - mongo
+    ports:
+      - "8081:8081"
+    networks:
+      - rebelleintask_network
+
+volumes:
+  mongo_data:
+    driver: local
+  nginx_ssl:
+    driver: local
+  nginx_config:
+    driver: local
+
+networks:
+  rebelleintask_network:
+    driver: bridge

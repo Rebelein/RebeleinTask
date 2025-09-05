@@ -1,0 +1,50 @@
+version: '3.8'
+
+# Externer Reverse-Proxy (läuft außerhalb von Portainer)
+# Nur verwenden wenn wirklich mehrere Portainer-Stacks über eine Domain laufen sollen
+
+services:
+  caddy:
+    image: caddy:alpine
+    container_name: external_reverse_proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      # Ihre Domain hier eintragen
+      - DOMAIN=ihre-domain.de
+    command:
+      - sh
+      - -c
+      - |
+        cat <<EOF > /etc/caddy/Caddyfile
+        {
+          admin off
+          email admin@ihre-domain.de
+        }
+
+        # Hauptanwendung
+        https://ihre-domain.de {
+          reverse_proxy 217.154.223.78:3000
+        }
+
+        # Weitere Portainer-Apps (Beispiele)
+        https://app2.ihre-domain.de {
+          reverse_proxy 217.154.223.78:3001
+        }
+
+        https://admin.ihre-domain.de {
+          reverse_proxy 217.154.223.78:8081
+        }
+        EOF
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
